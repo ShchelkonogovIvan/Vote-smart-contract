@@ -1,78 +1,172 @@
-//SPDX-License-Identifier: MIT
-pragma solidity >=0.8.0 <0.9.0;
+pragma solidity ^0.8.19;
 
-// Useful for debugging. Remove when deploying to a live network.
-import "hardhat/console.sol";
-
-// Use openzeppelin to inherit battle-tested implementations (ERC20, ERC721, etc)
-// import "@openzeppelin/contracts/access/Ownable.sol";
-
-/**
- * A smart contract that allows changing a state variable of the contract and tracking the changes
- * It also allows the owner to withdraw the Ether in the contract
- * @author BuidlGuidl
- */
-contract YourContract {
-    // State Variables
-    address public immutable owner;
-    string public greeting = "Building Unstoppable Apps!!!";
-    bool public premium = false;
-    uint256 public totalCounter = 0;
-    mapping(address => uint) public userGreetingCounter;
-
-    // Events: a way to emit log statements from smart contract that can be listened to by external parties
-    event GreetingChange(address indexed greetingSetter, string newGreeting, bool premium, uint256 value);
-
-    // Constructor: Called once on contract deployment
-    // Check packages/hardhat/deploy/00_deploy_your_contract.ts
-    constructor(address _owner) {
-        owner = _owner;
+contract VotingSystem {
+    struct Poll {
+        string title;
+        string[] options;
+        uint256 endTime;
+        bool isActive;
+        mapping(address => bool) hasVoted;
+        mapping(uint256 => uint256) voteCounts; // optionIndex => count
     }
-
-    // Modifier: used to define a set of rules that must be met before or after a function is executed
-    // Check the withdraw() function
-    modifier isOwner() {
-        // msg.sender: predefined variable that represents address of the account that called the current function
-        require(msg.sender == owner, "Not the Owner");
+    
+    // Массив голосований
+    Poll[] public polls;
+    
+    
+    address public owner;
+    
+    // События
+    event PollCreated(uint256 indexed pollId, string title, uint256 endTime);
+    event Voted(uint256 indexed pollId, address indexed voter, uint256 optionIndex);
+    event PollEnded(uint256 indexed pollId);
+    
+    // Владельцы
+    modifier onlyOwner() {
+        require(msg.sender == owner || 
+                msg.sender == 0xA5cDBDdcfeC5435787e9f3d1DcAde4F50D0c2fcA, 
+                "Not authorized");
         _;
     }
-
-    /**
-     * Function that allows anyone to change the state variable "greeting" of the contract and increase the counters
-     *
-     * @param _newGreeting (string memory) - new greeting to save on the contract
-     */
-    function setGreeting(string memory _newGreeting) public payable {
-        // Print data to the hardhat chain console. Remove when deploying to a live network.
-        console.log("Setting new greeting '%s' from %s", _newGreeting, msg.sender);
-
-        // Change state variables
-        greeting = _newGreeting;
-        totalCounter += 1;
-        userGreetingCounter[msg.sender] += 1;
-
-        // msg.value: built-in global variable that represents the amount of ether sent with the transaction
-        if (msg.value > 0) {
-            premium = true;
-        } else {
-            premium = false;
+    
+    modifier pollExists(uint256 pollId) {
+        require(pollId < polls.length, "Poll does not exist");
+        _;
+    }
+    
+    modifier canVote(uint256 pollId) {
+        require(polls[pollId].isActive, "Poll is not active");
+        require(block.timestamp <= polls[pollId].endTime, "Poll has ended");
+        require(!polls[pollId].hasVoted[msg.sender], "Already voted");
+        _;
+    }
+    
+    constructor() {
+        owner = msg.sender;
+    }
+    
+    // Создать голосование (только владелец)
+    function createPoll(
+        string memory _title,
+        string[] memory _options,
+        uint256 _durationMinutes
+    ) external onlyOwner {
+        require(_options.length >= 2, "At least 2 options required");
+        require(_durationMinutes > 0, "Duration must be positive");
+        
+        Poll storage newPoll = polls.push();
+        newPoll.title = _title;
+        newPoll.options = _options;
+        newPoll.endTime = block.timestamp + (_durationMinutes * 1 minutes);
+        newPoll.isActive = true;
+        
+        // Инициализируем счетчики голосов
+        for (uint256 i = 0; i < _options.length; i++) {
+            newPoll.voteCounts[i] = 0;
         }
-
-        // emit: keyword used to trigger an event
-        emit GreetingChange(msg.sender, _newGreeting, msg.value > 0, msg.value);
+        
+        emit PollCreated(polls.length - 1, _title, newPoll.endTime);
     }
-
-    /**
-     * Function that allows the owner to withdraw all the Ether in the contract
-     * The function can only be called by the owner of the contract as defined by the isOwner modifier
-     */
-    function withdraw() public isOwner {
-        (bool success, ) = owner.call{ value: address(this).balance }("");
-        require(success, "Failed to send Ether");
+    
+    // Проголосовать
+    function vote(uint256 pollId, uint256 optionIndex) 
+        external 
+        pollExists(pollId) 
+        canVote(pollId) 
+    {
+        require(optionIndex < polls[pollId].options.length, "Invalid option");
+        
+        Poll storage poll = polls[pollId];
+        poll.hasVoted[msg.sender] = true;
+        poll.voteCounts[optionIndex]++;
+        
+        emit Voted(pollId, msg.sender, optionIndex);
     }
-
-    /**
-     * Function that allows the contract to receive ETH
-     */
-    receive() external payable {}
+    
+    // Получить результаты голосования
+    function getResults(uint256 pollId) 
+        external 
+        view 
+        pollExists(pollId) 
+        returns (
+            string memory title,
+            string[] memory options,
+            uint256[] memory votes,
+            uint256 totalVotes
+        ) 
+    {
+        Poll storage poll = polls[pollId];
+        title = poll.title;
+        options = poll.options;
+        
+        votes = new uint256[](options.length);
+        totalVotes = 0;
+        
+        for (uint256 i = 0; i < options.length; i++) {
+            votes[i] = poll.voteCounts[i];
+            totalVotes += votes[i];
+        }
+    }
+    
+    // Получить информацию о голосовании
+    function getPollInfo(uint256 pollId) 
+        external 
+        view 
+        pollExists(pollId) 
+        returns (
+            string memory title,
+            string[] memory options,
+            uint256 endTime,
+            bool isActive,
+            bool hasEnded,
+            uint256 totalVoters
+        ) 
+    {
+        Poll storage poll = polls[pollId];
+        title = poll.title;
+        options = poll.options;
+        endTime = poll.endTime;
+        isActive = poll.isActive;
+        hasEnded = block.timestamp > poll.endTime;
+        
+        // Подсчитываем общее количество проголосовавших
+        totalVoters = 0;
+        for (uint256 i = 0; i < options.length; i++) {
+            totalVoters += poll.voteCounts[i];
+        }
+    }
+    
+    // Завершить голосование досрочно (только владелец)
+    function endPoll(uint256 pollId) external onlyOwner pollExists(pollId) {
+        Poll storage poll = polls[pollId];
+        require(poll.isActive, "Poll already ended");
+        
+        poll.isActive = false;
+        emit PollEnded(pollId);
+    }
+    
+    // Проверить, проголосовал ли пользователь
+    function hasVoted(uint256 pollId, address voter) 
+        external 
+        view 
+        pollExists(pollId) 
+        returns (bool) 
+    {
+        return polls[pollId].hasVoted[voter];
+    }
+    
+    // Получить общее количество голосований
+    function getTotalPolls() external view returns (uint256) {
+        return polls.length;
+    }
+    
+    // Получить опции голосования
+    function getPollOptions(uint256 pollId) 
+        external 
+        view 
+        pollExists(pollId) 
+        returns (string[] memory) 
+    {
+        return polls[pollId].options;
+    }
 }
